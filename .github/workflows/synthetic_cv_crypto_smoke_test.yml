@@ -1,0 +1,92 @@
+name: Tester le chiffrement d'un CV fictif sur le runner public
+
+on:
+  workflow_dispatch:
+
+# Exécution entièrement autonome, sans secret, action tierce ni accès GitHub.
+permissions: {}
+
+jobs:
+  synthetic_cv_crypto:
+    name: Test de chiffrement AES-256-GCM (aucune donnée personnelle)
+    if: github.repository == 'Jerempoli/job-agent-vault-runner' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Sceller et restaurer un PDF intégralement fictif en mémoire
+        shell: bash
+        run: |
+          node <<'NODE'
+          'use strict';
+          const assert = require('node:assert/strict');
+          const {randomBytes, createHash, createCipheriv, createDecipheriv} = require('node:crypto');
+          const AAD = Buffer.from('job-agent-jeremy/private-cv-bundle/v1', 'utf8');
+          const FORMAT = 'job-agent-encrypted-private-cv-v1';
+          
+          // PDF entièrement fictif généré uniquement en mémoire, sans fichier personnel.
+          function fakePdf() {
+            const stream = 'BT /F1 12 Tf 72 720 Td (SYNTHETIC TEST RECORD - NOT A REAL CV) Tj ET';
+            const objects = [
+              '<< /Type /Catalog /Pages 2 0 R >>',
+              '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+              '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+              '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+              '<< /Length ' + Buffer.byteLength(stream) + ' >>\nstream\n' + stream + '\nendstream'
+            ];
+            let pdf = '%PDF-1.4\n';
+            const offsets = [0];
+            objects.forEach((body, i) => {
+              offsets.push(Buffer.byteLength(pdf));
+              pdf += (i + 1) + ' 0 obj\n' + body + '\nendobj\n';
+            });
+            const start = Buffer.byteLength(pdf);
+            pdf += 'xref\n0 ' + (objects.length + 1) + '\n0000000000 65535 f \n';
+            for (const offset of offsets.slice(1)) {
+              pdf += String(offset).padStart(10, '0') + ' 00000 n \n';
+            }
+            pdf += 'trailer\n<< /Size ' + (objects.length + 1) + ' /Root 1 0 R >>\n';
+            pdf += 'startxref\n' + start + '\n%%EOF\n';
+            return Buffer.from(pdf, 'utf8');
+          }
+          function seal(cleartext, key) {
+            const nonce = randomBytes(12);
+            const cipher = createCipheriv('aes-256-gcm', key, nonce);
+            cipher.setAAD(AAD);
+            const payload = Buffer.concat([cipher.update(cleartext), cipher.final(), cipher.getAuthTag()]);
+            return {format: FORMAT, nonce: nonce.toString('base64'), ciphertext: payload.toString('base64')};
+          }
+          function open(envelope, key) {
+            assert.deepEqual(Object.keys(envelope).sort(), ['ciphertext', 'format', 'nonce']);
+            assert.equal(envelope.format, FORMAT);
+            const nonce = Buffer.from(envelope.nonce, 'base64');
+            const payload = Buffer.from(envelope.ciphertext, 'base64');
+            assert.equal(nonce.length, 12);
+            assert.ok(payload.length > 16);
+            const decipher = createDecipheriv('aes-256-gcm', key, nonce);
+            decipher.setAAD(AAD);
+            decipher.setAuthTag(payload.subarray(-16));
+            return Buffer.concat([decipher.update(payload.subarray(0, -16)), decipher.final()]);
+          }
+          const pdf = fakePdf();
+          const attestation = {
+            master_sha256: createHash('sha256').update(pdf).digest('hex'),
+            master_layout_approved: true,
+            availability_verified: true,
+            verified_evidence: []
+          };
+          const payload = Buffer.from(JSON.stringify({pdf_base64: pdf.toString('base64'), attestation}));
+          const oneTimeKey = randomBytes(32); // Aucune clé permanente.
+          const envelope = seal(payload, oneTimeKey);
+          const restored = JSON.parse(open(envelope, oneTimeKey).toString('utf8'));
+          assert.deepEqual(Buffer.from(restored.pdf_base64, 'base64'), pdf);
+          assert.deepEqual(restored.attestation, attestation);
+          assert.ok(pdf.toString().startsWith('%PDF-'));
+          assert.ok(pdf.toString().includes('%%EOF'));
+          assert.ok(!JSON.stringify(envelope).includes('SYNTHETIC TEST RECORD'));
+          assert.throws(() => open(envelope, randomBytes(32)));
+          const tampered = Buffer.from(envelope.ciphertext, 'base64');
+          tampered[0] ^= 1;
+          assert.throws(() => open({...envelope, ciphertext: tampered.toString('base64')}, oneTimeKey));
+          console.log('SUCCES : PDF fictif scelle et restaure en memoire (AES-256-GCM).');
+          console.log('Mauvaise cle et alteration refusees. Aucun acces aux depots prives.');
+          NODE
