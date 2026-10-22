@@ -1,0 +1,34 @@
+name: Test manuel du runner isole sans secrets
+
+on:
+  workflow_dispatch:
+
+# Aucun droit GitHub accordé au GITHUB_TOKEN de ce test.
+permissions: {}
+
+jobs:
+  test_runner:
+    name: Vérifier le runner public sans données sensibles
+    if: github.repository == 'Jerempoli/job-agent-vault-runner' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Vérifier le contexte avec Python intégré
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+
+          expected = {
+              "GITHUB_REPOSITORY": "Jerempoli/job-agent-vault-runner",
+              "GITHUB_REF": "refs/heads/main",
+              "GITHUB_EVENT_NAME": "workflow_dispatch",
+          }
+          for name, value in expected.items():
+              if os.environ.get(name) != value:
+                  raise SystemExit("ECHEC : contexte d'execution inattendu.")
+
+          print("SUCCES : runner isole execute manuellement sur main.")
+          print("Aucune cle, aucun CV, aucun depot prive et aucun appel reseau requis.")
+          print("Aucune action tierce et aucun artefact produit.")
+          PY
