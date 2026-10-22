@@ -1,0 +1,38 @@
+name: Tester l'environnement public avec un secret fictif
+
+on:
+  workflow_dispatch:
+
+# Jeton GitHub du workflow sans permissions.
+permissions: {}
+
+jobs:
+  check_dummy_environment:
+    name: Tester le secret fictif sans accès aux dépôts privés
+    if: github.repository == 'Jerempoli/job-agent-vault-runner' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    environment: vault-runner-test
+    steps:
+      - name: Contrôler uniquement une valeur de démonstration
+        shell: bash
+        env:
+          DEMO_SECRET: ${{ secrets.JOB_AGENT_RUNNER_TEST_ONLY }}
+        run: |
+          python3 - <<'PY'
+          import os
+
+          expected = {
+              "GITHUB_REPOSITORY": "Jerempoli/job-agent-vault-runner",
+              "GITHUB_REF": "refs/heads/main",
+              "GITHUB_EVENT_NAME": "workflow_dispatch",
+          }
+          if any(os.environ.get(key) != val for key, val in expected.items()):
+              raise SystemExit("ECHEC : contexte du runner inattendu.")
+
+          if os.environ.get("DEMO_SECRET") != "runner-demo-only-2026":
+              raise SystemExit("ECHEC : secret fictif non disponible dans l'environnement.")
+
+          print("SUCCES : secret fictif accessible sur le runner protege.")
+          print("Aucun jeton reel, aucune donnee personnelle, aucun acces aux depots prives.")
+          PY
